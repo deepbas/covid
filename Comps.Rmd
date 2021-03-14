@@ -1,0 +1,102 @@
+---
+title: "Carleton Comps Project Demo"
+author: "Deepak Bastola"
+date: "March 6, 2021"
+output: html_document
+---
+
+
+```{r}
+library(CARBayes)
+library(shiny)
+library(leaflet)
+library(maps)
+library(spdep)
+
+
+MNcounty<-map("county","Minnesota", plot=FALSE, fill=TRUE)
+MNmap <- map2SpatialPolygons(MNcounty,IDs = MNcounty$names)
+mydata <- read.csv("/home/deepak/Desktop/Rdata/car/covid.csv", header = TRUE)
+ID <- seq.int(nrow(mydata))
+y.i <- mydata$X7.day.average.cases
+n.i <- mydata$Population
+e.count <- sum(y.i)/(sum(n.i)) * n.i
+d <- data.frame(ID = mydata$County, obs = y.i, expe = e.count, pop = n.i)
+d$SIR <- d$obs/d$expe
+rownames(d) <- d$ID
+map <- SpatialPolygonsDataFrame(MNmap, d, match.ID = FALSE)
+
+
+W.nb <- poly2nb(MNmap)
+W.mat <- nb2mat(W.nb, style="B")
+
+n.sample <- 10000
+
+form <- obs ~ 1 + offset(log(expe))
+model <- S.CARbym(formula=form, 
+                          family="poisson", 
+                          data=d, 
+                          W=W.mat, 
+                          n.sample=10000)
+
+
+
+y.fit <- model$samples$fitted
+SIR.fit <- t(t(y.fit)/d$expe)
+
+# Add summary statistics of the posterior SIR to map
+map$SIR.50 <- apply(SIR.fit, 2, median)
+map$SIR.025 <- apply(SIR.fit, 2, quantile, 0.025)
+map$SIR.975 <- apply(SIR.fit, 2, quantile, 0.975)
+map$PP <- apply(SIR.fit, 2, function(x) length(which(x > 1))) / n.sample
+
+
+pal <- colorNumeric(palette = "RdYlBu", domain = map$SIR.50)
+labels <- sprintf("<strong> %s </strong> <br/> Observed: %s <br/> Expected: %s<br/> SIR: %s <br/>RR: %s (%s, %s) <br/>PP: %s",
+        map$ID, map$obs,  round(map$expe, 2), round(map$SIR, 2),
+        round(map$SIR.50, 2), round(map$SIR.025, 2), round(map$SIR.975, 2), 
+        round(map$PP, 3))
+labels <- lapply(labels, htmltools::HTML)
+
+
+r_colors <- rgb(t(col2rgb(colors())/255))
+names(r_colors) <- colors()
+
+ui <- fluidPage(
+  titlePanel("Minnesota COVID Map"),
+  leafletOutput("mymap"),
+  p()
+)
+
+
+server <- function(input, output, session) {
+  
+output$mymap <- renderLeaflet({
+    lmap <- leaflet(map) %>%
+addTiles() %>%
+addPolygons(.,
+    color = "grey", 
+    weight = 1, 
+    fillColor = ~pal(SIR.50), 
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(weight = 4),
+    label = labels,
+    labelOptions = labelOptions(
+        style = list("font-weight" = "normal", padding = "3px 8px"),
+        textsize = "15px", 
+        direction = "auto"
+    )
+) %>%
+addLegend(.,
+    pal = pal, 
+    values = ~SIR.50, 
+    opacity = 0.7, 
+    title = "Relative Risk", 
+    position = "bottomright"
+)
+  })
+}
+
+shinyApp(ui, server)
+
+```
